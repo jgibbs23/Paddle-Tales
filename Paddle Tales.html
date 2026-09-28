@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Paddle Tales</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      touch-action: none; /* Disables browser scrolling/zooming while touching the game */
+    }
+
+    body {
+      background-color: #030308;
+      color: #fff;
+      font-family: 'Courier New', monospace;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    .canvas-container {
+      position: relative;
+      width: 95vw;
+      max-width: 800px;
+      aspect-ratio: 2 / 1;
+    }
+
+    /* Refined Cyberpunk Title Logo (Subtle Glow / Crisp Legibility) */
+    .game-logo {
+      font-family: 'Impact', 'Courier New', sans-serif;
+      font-size: 42px;
+      font-weight: 900;
+      font-style: italic;
+      text-transform: uppercase;
+      letter-spacing: 6px;
+      margin-bottom: 18px;
+      color: #ff007f;
+      text-shadow:
+        2px 2px 0px #050512,
+        -1px -1px 0px #050512,
+        0 0 6px rgba(255, 0, 127, 0.7),
+        0 0 14px rgba(255, 0, 127, 0.4);
+      user-select: none;
+    }
+
+    .game-logo span {
+      color: #00f3ff;
+      text-shadow:
+        2px 2px 0px #050512,
+        -1px -1px 0px #050512,
+        0 0 6px rgba(0, 243, 255, 0.7),
+        0 0 14px rgba(0, 243, 255, 0.4);
+    }
+
+    /* Win/Loss Tracker Positioned Above Right Border */
+    .wl-tracker {
+      position: absolute;
+      top: -26px;
+      right: 0;
+      font-size: 16px;
+      font-weight: bold;
+      color: #00f3ff;
+      text-shadow: 0 0 8px #00f3ff;
+      letter-spacing: 2px;
+      user-select: none;
+    }
+
+    #ppTracker {
+      right: auto !important;
+      left: 0 !important;
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      border: 4px solid #ff007f;
+      background-color: #050512;
+      display: block;
+    }
+
+    /* CRT Overlay Effect */
+    .crt-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      background: linear-gradient(
+        rgba(18, 16, 16, 0) 50%, 
+        rgba(0, 0, 0, 0.4) 50%
+      ), linear-gradient(
+        90deg,
+        rgba(255, 0, 0, 0.03),
+        rgba(0, 255, 0, 0.01),
+        rgba(0, 0, 255, 0.03)
+      );
+      background-size: 100% 4px, 6px 100%;
+      box-shadow: inset 0 0 60px rgba(0, 0, 0, 0.8);
+    }
+
+    .instructions {
+      margin-top: 16px;
+      color: #00f3ff;
+      text-shadow: 0 0 8px #00f3ff;
+      letter-spacing: 1px;
+      font-size: 14px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+
+  <h1 class="game-logo">PADDLE <span>TALES</span></h1>
+
+  <div class="canvas-container">
+    <div class="wl-tracker" id="wlTracker">W/L: 0 - 0</div>
+    <div class="wl-tracker" id="ppTracker">PP: 0</div>
+    
+    <canvas id="pongCanvas" width="800" height="400"></canvas>
+    <div class="crt-overlay"></div>
+  </div>
+  
+  <div class="instructions">Controls: Drag Touch | W/S or Arrow Keys | Tap / Space to Start</div>
+
+  <script>
+    const canvas = document.getElementById("pongCanvas");
+    const ctx = canvas.getContext("2d");
+    const wlTracker = document.getElementById("wlTracker");
+    const ppTracker = document.getElementById("ppTracker");
+
+    // --- Persistent Storage & Economy Engine ---
+    let matchWins = parseInt(localStorage.getItem("pt_wins")) || 0;
+    let matchLosses = parseInt(localStorage.getItem("pt_losses")) || 0;
+    let paddlePoints = parseInt(localStorage.getItem("pt_points")) || 0;
+
+    // --- Best 3 out of 5 Mechanics ---
+    let playerSets = 0;
+    let aiSets = 0;
+    const SETS_TO_WIN = 3;
+    const POINTS_PER_SET = 5;
+
+    function saveGameData() {
+      localStorage.setItem("pt_wins", matchWins);
+      localStorage.setItem("pt_losses", matchLosses);
+      localStorage.setItem("pt_points", paddlePoints);
+    }
+
+    function updateWlTracker() {
+      if (ppTracker) ppTracker.textContent = `PP: ${paddlePoints}`;
+      if (wlTracker) wlTracker.textContent = `W/L: ${matchWins}-${matchLosses} | SETS: ${playerSets}-${aiSets}`;
+    }
+
+    // Palette Definitions
+    const COLOR_BORDER = "#ff007f"; // Static Magenta Border
+    const COLOR_PLAYER = "#00f3ff"; // Neon Cyan
+    const COLOR_AI = "#ff0055";     // Neon Pink
+    const COLOR_BALL = "#ffe600";   // Neon Yellow
+
+    // Sound Synthesizer Engine (Web Audio API)
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    let audioCtx;
+    let bgMusicTimeout = null;
+    let currentBeat = 0;
+    let currentBpm = 100;
+    let paddleTouches = 0;
+
+    // Continuous Sub-Drone Tension Synth Variables
+    let oscDrone = null;
+    let gainDrone = null;
+    const BASE_DRONE_FREQ = 82.41; // E2
+    const MAX_DRONE_FREQ = 116.54; // A#2 / Bb2 (6 semitones higher)
+    const BASE_DRONE_VOL = 0.035;  // Quiet sub-layer
+    const MAX_DRONE_VOL = 0.065;   // Subtle crescendo cap
+
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new AudioContext();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function playTone(freq, type = "sine", duration = 0.1, startFreq = null) {
+      if (!audioCtx) return;
+
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = type;
+
+      if (startFreq) {
+        osc.frequency.setValueAtTime(startFreq, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(Math.max(freq, 10), audioCtx.currentTime + duration);
+      } else {
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      }
+
+      gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + duration);
+    }
+
+    function playImpactNoise(duration = 0.3) {
+      if (!audioCtx) return;
+
+      const bufferSize = audioCtx.sampleRate * duration;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.25, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+
+      noise.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      noise.start();
+    }
+
+    function playKick() {
+      if (!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(130, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(30, audioCtx.currentTime + 0.12);
+
+      gain.gain.setValueAtTime(0.4, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.15);
+    }
+
+    function playBassSlide() {
+      if (!audioCtx) return;
+
+      const barDuration = (60 / currentBpm) * 4;
+
+      const oscBass = audioCtx.createOscillator();
+      const gainBass = audioCtx.createGain();
+      const freqDs2 = 77.78;
+      const freqC2 = 65.41;
+
+      oscBass.type = "sawtooth";
+      oscBass.frequency.setValueAtTime(freqDs2, audioCtx.currentTime);
+      oscBass.frequency.exponentialRampToValueAtTime(freqC2, audioCtx.currentTime + barDuration * 0.85);
+
+      gainBass.gain.setValueAtTime(0.18, audioCtx.currentTime);
+      gainBass.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + barDuration * 0.95);
+
+      oscBass.connect(gainBass);
+      gainBass.connect(audioCtx.destination);
+
+      oscBass.start();
+      oscBass.stop(audioCtx.currentTime + barDuration);
+    }
+
+    function startDroneSynth() {
+      if (!audioCtx || oscDrone) return;
+
+      oscDrone = audioCtx.createOscillator();
+      gainDrone = audioCtx.createGain();
+
+      oscDrone.type = "sawtooth";
+      oscDrone.frequency.setValueAtTime(BASE_DRONE_FREQ, audioCtx.currentTime);
+      gainDrone.gain.setValueAtTime(BASE_DRONE_VOL, audioCtx.currentTime);
+
+      oscDrone.connect(gainDrone);
+      gainDrone.connect(audioCtx.destination);
+
+      oscDrone.start();
+      
+      updateDroneTension();
+    }
+
+    function stopDroneSynth() {
+      if (gainDrone && audioCtx) {
+        gainDrone.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime + 0.3);
+        setTimeout(() => {
+          if (oscDrone) {
+            oscDrone.stop();
+            oscDrone.disconnect();
+            oscDrone = null;
+          }
+        }, 320);
+      }
+    }
+
+    function updateDroneTension() {
+      if (!audioCtx || !oscDrone || !gainDrone) return;
+
+      const now = audioCtx.currentTime;
+      const transitionTime = 1.8;
+
+      const totalScore = player.score + ai.score;
+      const progress = Math.min(1.0, totalScore / 10);
+
+      const targetFreq = BASE_DRONE_FREQ * Math.pow(MAX_DRONE_FREQ / BASE_DRONE_FREQ, progress);
+      const targetVol = BASE_DRONE_VOL + (MAX_DRONE_VOL - BASE_DRONE_VOL) * progress;
+
+      oscDrone.frequency.cancelScheduledValues(now);
+      gainDrone.gain.cancelScheduledValues(now);
+
+      oscDrone.frequency.linearRampToValueAtTime(targetFreq, now + transitionTime);
+      gainDrone.gain.linearRampToValueAtTime(targetVol, now + transitionTime);
+    }
+
+    function scheduleNextBeat() {
+      if (gameState !== "PLAYING") return;
+
+      playKick();
+
+      if (currentBeat % 4 === 0) {
+        playBassSlide();
+      }
+
+      currentBeat++;
+
+      const beatIntervalMs = (60 / currentBpm) * 1000;
+      bgMusicTimeout = setTimeout(scheduleNextBeat, beatIntervalMs);
+    }
+
+    function startBackgroundMusic() {
+      stopBackgroundMusic();
+      currentBeat = 0;
+      scheduleNextBeat();
+    }
+
+    function stopBackgroundMusic() {
+      if (bgMusicTimeout) {
+        clearTimeout(bgMusicTimeout);
+        bgMusicTimeout = null;
+      }
+      stopDroneSynth();
+    }
+
+    function registerPaddleTouch() {
+      paddleTouches++;
+      if (paddleTouches >= 4) {
+        const extraHits = paddleTouches - 5;
+        currentBpm = Math.min(500, 100 + extraHits * 5);
+      }
+    }
+
+    function playVictorySound() {
+      stopBackgroundMusic();
+      if (!audioCtx) return;
+      const notes = [261.63, 329.63, 392.00, 523.25, 659.25, 783.99];
+      notes.forEach((freq, index) => {
+        setTimeout(() => {
+          playTone(freq, "square", 0.25);
+        }, index * 90);
+      });
+      setTimeout(() => {
+        playTone(1046.50, "sawtooth", 0.6);
+        playTone(523.25, "square", 0.6);
+      }, notes.length * 90);
+    }
+
+    function playEvilRumble() {
+      stopBackgroundMusic();
+      if (!audioCtx) return;
+
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc1.type = "sawtooth";
+      osc2.type = "sawtooth";
+
+      osc1.frequency.setValueAtTime(75, audioCtx.currentTime);
+      osc1.frequency.exponentialRampToValueAtTime(32, audioCtx.currentTime + 1.8);
+
+      osc2.frequency.setValueAtTime(71, audioCtx.currentTime);
+      osc2.frequency.exponentialRampToValueAtTime(28, audioCtx.currentTime + 1.8);
+
+      gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 2.0);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc1.start();
+      osc2.start();
+      osc1.stop(audioCtx.currentTime + 2.0);
+      osc2.stop(audioCtx.currentTime + 2.0);
+
+      playImpactNoise(1.5);
+    }
+
+    // Game Objects
+    const paddleWidth = 12;
+    const paddleHeight = 80;
+
+    const player = { x: 20, y: canvas.height / 2 - paddleHeight / 2, score: 0 };
+    const ai = { x: canvas.width - 20 - paddleWidth, y: canvas.height / 2 - paddleHeight / 2, score: 0 };
+    const ball = { 
+      x: canvas.width / 2, 
+      y: canvas.height / 2, 
+      radius: 7, 
+      dx: 2.5, 
+      dy: 2, 
+      color: COLOR_BALL, 
+      isServing: true, 
+      server: "player" 
+    };
+
+    let gameState = "START";
+    let frameCount = 0;
+    const paddleSpeed = 480;
+    const keys = {};
+
+    let particles = [];
+    let ballTrail = [];
+    let shakeAmount = 0;
+    let pulseTime = 5;
+
+    // Input Listeners
+    window.addEventListener("keydown", (e) => {
+      initAudio();
+      keys[e.code] = true;
+      if (e.code === "Space") {
+        handleStateTransition();
+      }
+    });
+
+    window.addEventListener("keyup", (e) => {
+      keys[e.code] = false;
+    });
+
+    function handleStateTransition() {
+      if (gameState === "START" || gameState === "GAME_OVER") {
+        resetGame();
+        gameState = "SET_START";
+      } else if (gameState === "SET_START") {
+        gameState = "PLAYING";
+      } else if (gameState === "PLAYING" && ball.isServing) {
+        launchServe();
+      }
+    }
+
+    function handleTouch(e) {
+      e.preventDefault();
+      initAudio();
+
+      const rect = canvas.getBoundingClientRect();
+      const touch = e.touches[0];
+      
+      if (!touch) return;
+
+      const clientY = touch.clientY - rect.top;
+      const scaleY = canvas.height / rect.height;
+      const touchYInCanvas = clientY * scaleY;
+
+      player.y = touchYInCanvas - paddleHeight / 2;
+      player.y = Math.max(0, Math.min(canvas.height - paddleHeight, player.y));
+    }
+
+    window.addEventListener("touchstart", (e) => {
+      handleTouch(e);
+      handleStateTransition();
+    }, { passive: false });
+
+    window.addEventListener("touchmove", handleTouch, { passive: false });
+
+    function createSparks(x, y, color, count = 35, baseAngle = null, angleSpread = Math.PI * 2) {
+      // Evaluate actual per-second ball speed normalized against a reference base
+      const currentBallSpeed = Math.hypot(ball.dx, ball.dy);
+      const speedMultiplier = Math.max(0.9, (currentBallSpeed / 400) * 0.85);
+
+      for (let i = 0; i < count; i++) {
+        let angle;
+        if (baseAngle !== null) {
+          angle = baseAngle + (Math.random() - 0.5) * angleSpread;
+        } else {
+          angle = Math.random() * Math.PI * 2;
+        }
+
+        const speed = (Math.random() * 2.2 + 0.8) * speedMultiplier;
+        particles.push({
+          x: x,
+          y: y,
+          dx: Math.cos(angle) * speed,
+          dy: Math.sin(angle) * speed - (Math.random() * 1.5 + 0.5),
+          radius: Math.random() * 2 + 1,
+          color: color,
+          alpha: 1,
+          gravity: 0.08,
+          bounciness: Math.random() * 0.15 + 0.72,
+          friction: 0.992,
+          bouncesLeft: Math.floor(Math.random() * 3) + 3,
+          isGrounded: false,
+          shimmerSpeed: Math.random() * 0.4 + 0.2,
+          phase: Math.random() * Math.PI * 2
+        });
+      }
+    }
+
+    function addScreenShake(intensity) {
+      shakeAmount = intensity;
+    }
+
+    function resetBall(server = "player") {
+      ball.isServing = true;
+      ball.server = server;
+      ball.color = (server === "player") ? COLOR_PLAYER : COLOR_AI;
+      ball.dx = 0;
+      ball.dy = 0;
+      ballTrail = [];
+
+      updateDroneTension();
+      updateServePosition();
+    }
+
+    function updateServePosition() {
+  if (ball.server === "player") {
+    ball.x = player.x + paddleWidth + ball.radius + 2;
+    ball.y = player.y + paddleHeight / 2;
+  } else {
+    ball.x = ai.x - ball.radius - 2;
+    ball.y = ai.y + paddleHeight / 2;
+  }
+}
+
+    function launchServe() {
+      ball.isServing = false;
+      ball.color = COLOR_BALL;
+
+      updateDroneTension();
+
+      // Increased base serve speeds for faster initial play
+      const initialSpeedX = 520; // Up from 320
+      const initialSpeedY = (Math.random() > 0.5 ? 1 : -1) * (Math.random() * 220 + 140); // Up from 150+100
+
+      if (ball.server === "player") {
+        ball.dx = initialSpeedX;
+      } else {
+        ball.dx = -initialSpeedX;
+      }
+      ball.dy = initialSpeedY;
+    }
+
+  function update(dt) {
+      frameCount++;
+      pulseTime += dt;
+
+      if (gameState !== "PLAYING") return;
+
+      // Check serving state FIRST before running movement equations
+      if (ball.isServing) {
+
+       // Player Movement during serve positioning
+if (keys["KeyW"] || keys["ArrowUp"]) player.y -= paddleSpeed * dt;
+if (keys["KeyS"] || keys["ArrowDown"]) player.y += paddleSpeed * dt;
+player.y = Math.max(0, Math.min(canvas.height - paddleHeight, player.y));
+
+        updateServePosition();
+
+        if (ball.server === "ai") {
+          setTimeout(() => { if (ball.isServing && ball.server === "ai") launchServe(); }, 600);
+        }
+        return;
+      }
+
+     // Player Movement during active play
+if (keys["KeyW"] || keys["ArrowUp"]) player.y -= paddleSpeed * dt;
+if (keys["KeyS"] || keys["ArrowDown"]) player.y += paddleSpeed * dt;
+player.y = Math.max(0, Math.min(canvas.height - paddleHeight, player.y));
+
+
+      // AI Movement
+      if (ball.dx > 0) {
+        if (!ai.targetY || frameCount % 2 === 0) {
+          const humanError = (Math.random() - 0.5) * 15;
+          ai.targetY = ball.y + humanError;
+        }
+
+        const aiCenter = ai.y + paddleHeight / 2;
+      const maxAiSpeed = 550 * dt;
+
+        if (aiCenter < ai.targetY - 15) ai.y += maxAiSpeed;
+        else if (aiCenter > ai.targetY + 15) ai.y -= maxAiSpeed;
+      } else {
+        ai.targetY = null;
+      }
+      ai.y = Math.max(0, Math.min(canvas.height - paddleHeight, ai.y));
+
+      // Ball Motion Blur Trail
+      ballTrail.push({ x: ball.x, y: ball.y });
+      if (ballTrail.length > 28) ballTrail.shift();
+
+      // Move Ball
+    ball.x += ball.dx * dt;
+    ball.y += ball.dy * dt;
+
+      // Top and Bottom Wall Bounce
+      if (ball.y - ball.radius <= 0) {
+        ball.y = ball.radius;
+        ball.dy *= -1;
+        createSparks(ball.x, ball.y, COLOR_BALL, 20, Math.PI / 2, Math.PI * 0.6);
+        addScreenShake(6);
+        playTone(320, "sine", 0.05);
+      } else if (ball.y + ball.radius >= canvas.height) {
+        ball.y = canvas.height - ball.radius;
+        ball.dy *= -1;
+        createSparks(ball.x, ball.y, COLOR_BALL, 20, -Math.PI / 2, Math.PI * 0.6);
+        addScreenShake(6);
+        playTone(320, "sine", 0.05);
+      }
+
+     // Player Paddle Collision
+      if (
+        ball.x - ball.radius <= player.x + paddleWidth &&
+        ball.y >= player.y &&
+        ball.y <= player.y + paddleHeight
+      ) {
+        let collidePoint = ball.y - (player.y + paddleHeight / 2);
+        collidePoint = collidePoint / (paddleHeight / 2);
+
+        const maxAngle = Math.PI / 3.5;
+        const bounceAngle = collidePoint * maxAngle;
+        
+        // Boost speed by 8% per hit, capped at 1200 px/sec max
+        const currentSpeed = Math.min(1200, Math.hypot(ball.dx, ball.dy) * 1.08);
+
+        ball.dx = currentSpeed * Math.cos(bounceAngle);
+        ball.dy = currentSpeed * Math.sin(bounceAngle);
+        ball.x = player.x + paddleWidth + ball.radius;
+
+        if (gameState === "PLAYING" && !bgMusicTimeout) {
+          startBackgroundMusic();
+        }
+
+        registerPaddleTouch();
+        createSparks(ball.x, ball.y, COLOR_PLAYER, 35, 0, Math.PI * 0.55);
+        addScreenShake(14);
+        playTone(120, "square", 0.08, 380);
+      }
+
+      // AI Paddle Collision
+      if (
+        ball.x + ball.radius >= ai.x &&
+        ball.y >= ai.y &&
+        ball.y <= ai.y + paddleHeight
+      ) {
+        let collidePoint = ball.y - (ai.y + paddleHeight / 2);
+        collidePoint = collidePoint / (paddleHeight / 2);
+
+        const maxAngle = Math.PI / 3.5;
+        const bounceAngle = collidePoint * maxAngle;
+        
+        // Boost speed by 8% per hit, capped at 1200 px/sec max
+        const currentSpeed = Math.min(1200, Math.hypot(ball.dx, ball.dy) * 1.08);
+
+        ball.dx = -currentSpeed * Math.cos(bounceAngle);
+        ball.dy = currentSpeed * Math.sin(bounceAngle);
+        ball.x = ai.x - ball.radius;
+
+        if (gameState === "PLAYING" && !bgMusicTimeout) {
+          startBackgroundMusic();
+        }
+
+        registerPaddleTouch();
+        createSparks(ball.x, ball.y, COLOR_AI, 35, Math.PI, Math.PI * 0.55);
+        addScreenShake(14);
+        playTone(100, "square", 0.08, 340);
+      }
+
+      // Scoring
+      if (ball.x < 0) {
+        ai.score++;
+        createSparks(0, ball.y, COLOR_AI, 55, 0, Math.PI * 0.8);
+        addScreenShake(24);
+        checkWinCondition();
+        if (gameState === "PLAYING") {
+          playImpactNoise(0.35);
+          playTone(60, "sawtooth", 0.25, 180);
+          resetBall("ai");
+        }
+      } else if (ball.x > canvas.width) {
+        player.score++;
+        createSparks(canvas.width, ball.y, COLOR_PLAYER, 55, Math.PI, Math.PI * 0.8);
+        addScreenShake(24);
+        checkWinCondition();
+        if (gameState === "PLAYING") {
+          playImpactNoise(0.35);
+          playTone(60, "sawtooth", 0.25, 180);
+          resetBall("player");
+        }
+      }
+
+      // Particle Collisions
+      const MAX_PARTICLES = 400;
+      const timeScale = dt * 60; // Normalizes movement to a 60 FPS reference frame
+
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+
+        if (!p.isGrounded) {
+          // Apply gravity scaled to time step
+          p.dy += p.gravity * timeScale;
+
+          // Apply exponential friction to preserve speed decay across varying frame rates
+          p.dx *= Math.pow(p.friction, timeScale);
+          p.dy *= Math.pow(p.friction, timeScale);
+
+          // Update position
+          p.x += p.dx * timeScale;
+          p.y += p.dy * timeScale;
+
+          // Floor collision and bounce
+          if (p.y + p.radius >= canvas.height) {
+            p.y = canvas.height - p.radius;
+            if (p.bouncesLeft > 0 && Math.abs(p.dy) > 0.2) {
+              p.dy *= -p.bounciness;
+              p.dx *= 0.82;
+              p.bouncesLeft--;
+            } else {
+              p.dy = 0;
+              p.dx = 0;
+              p.isGrounded = true;
+            }
+          }
+
+          // Wall bounces
+          if (p.x - p.radius <= 0) {
+            p.x = p.radius;
+            p.dx *= -p.bounciness;
+          } else if (p.x + p.radius >= canvas.width) {
+            p.x = canvas.width - p.radius;
+            p.dx *= -p.bounciness;
+          }
+        } else {
+          const playerPaddleRight = player.x + paddleWidth;
+          const aiPaddleLeft = ai.x;
+
+          // Paddle collision - Player
+          if (
+            p.x + p.radius >= player.x &&
+            p.x - p.radius <= playerPaddleRight &&
+            p.y + p.radius >= player.y &&
+            p.y - p.radius <= player.y + paddleHeight
+          ) {
+            p.isGrounded = false;
+            p.bouncesLeft = 2;
+            p.dx = Math.random() * 3 + 1.5;
+            p.dy = -(Math.random() * 3 + 1.5);
+          }
+
+          // Paddle collision - AI
+          if (
+            p.x + p.radius >= aiPaddleLeft &&
+            p.x - p.radius <= ai.x + paddleWidth &&
+            p.y + p.radius >= ai.y &&
+            p.y - p.radius <= ai.y + paddleHeight
+          ) {
+            p.isGrounded = false;
+            p.bouncesLeft = 2;
+            p.dx = -(Math.random() * 3 + 1.5);
+            p.dy = -(Math.random() * 3 + 1.5);
+          }
+
+          // Ball scatter interaction
+          const distToBall = Math.hypot(ball.x - p.x, ball.y - p.y);
+          const scatterRadius = ball.radius + p.radius + 28;
+
+          if (distToBall < scatterRadius && !ball.isServing) {
+            const angle = Math.atan2(p.y - ball.y, p.x - ball.x);
+            
+            // Normalize ball speed calculation relative to 60 FPS scale
+            const currentBallSpeed = Math.hypot(ball.dx, ball.dy);
+            const normalizedBallSpeed = currentBallSpeed > 50 ? currentBallSpeed / 60 : currentBallSpeed;
+
+            p.isGrounded = false;
+            p.bouncesLeft = Math.floor(Math.random() * 3) + 2;
+            p.dx = Math.cos(angle) * (normalizedBallSpeed * 1.4) + (Math.random() - 0.5) * 4;
+            p.dy = Math.sin(angle) * (normalizedBallSpeed * 1.4) - (Math.random() * 4 + 2);
+          }
+
+          // Grounded particle stacking / overlap push
+          for (let j = i - 1; j >= 0; j--) {
+            const p2 = particles[j];
+            if (!p2.isGrounded) continue;
+
+            const dx = p.x - p2.x;
+            const dy = p.y - p2.y;
+            const dist = Math.hypot(dx, dy);
+            const minDist = p.radius + p2.radius + 1.5;
+
+            if (dist < minDist && dist > 0) {
+              const overlap = (minDist - dist) * 0.8;
+              const pushX = (dx / dist) * overlap;
+
+              p.x += pushX * 0.75;
+              p2.x -= pushX * 0.75;
+
+              p.x = Math.max(p.radius, Math.min(canvas.width - p.radius, p.x));
+              p2.x = Math.max(p2.radius, Math.min(canvas.width - p2.radius, p2.x));
+            }
+          }
+        }
+      }
+
+      while (particles.length > MAX_PARTICLES) {
+        particles.shift();
+      }
+
+      // Smooth screen shake decay scaled to time step
+      if (shakeAmount > 0) shakeAmount = Math.max(0, shakeAmount - 0.8 * timeScale);
+    }
+
+    function checkWinCondition() {
+      if (player.score >= POINTS_PER_SET) {
+        playerSets++;
+        if (playerSets < SETS_TO_WIN) {
+          playVictorySound();
+          resetSet("player");
+        } else {
+          gameState = "GAME_OVER";
+          matchWins++;
+          paddlePoints += 1;
+          saveGameData();
+          playVictorySound();
+        }
+      } else if (ai.score >= POINTS_PER_SET) {
+        aiSets++;
+        if (aiSets < SETS_TO_WIN) {
+          playEvilRumble();
+          resetSet("ai");
+        } else {
+          gameState = "GAME_OVER";
+          matchLosses++;
+          saveGameData();
+          playEvilRumble();
+        }
+      }
+      updateWlTracker();
+    }
+
+    function resetSet(nextServer) {
+      player.score = 0;
+      ai.score = 0;
+      gameState = "SET_START";
+      
+      paddleTouches = 0;
+      currentBpm = 100;
+
+      resetBall(nextServer);
+    }
+
+    function resetGame() {
+      playerSets = 0;
+      aiSets = 0;
+      player.score = 0;
+      ai.score = 0;
+      player.y = canvas.height / 2 - paddleHeight / 2;
+      ai.y = canvas.height / 2 - paddleHeight / 2;
+      particles = [];
+      
+      paddleTouches = 0;
+      currentBpm = 100;
+
+      updateWlTracker();
+      resetBall("player");
+    }
+
+    function draw() {
+      ctx.save();
+
+      const pulseGlow = Math.sin(pulseTime) * 21 + 41;
+      canvas.style.borderColor = COLOR_BORDER;
+      canvas.style.boxShadow = `0 0 ${pulseGlow}px ${COLOR_BORDER}, inset 0 0 ${pulseGlow / 2}px ${COLOR_BORDER}`;
+
+      if (shakeAmount > 0) {
+        const rx = (Math.random() - 0.5) * shakeAmount;
+        const ry = (Math.random() - 0.5) * shakeAmount;
+        ctx.translate(rx, ry);
+      }
+
+      ctx.fillStyle = "rgba(5, 5, 18, 0.9)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.12)";
+      ctx.shadowColor = "#ffffff";
+      ctx.shadowBlur = 6;
+      ctx.setLineDash([10, 10]);
+      ctx.beginPath();
+      ctx.moveTo(canvas.width / 2, 0);
+      ctx.lineTo(canvas.width / 2, canvas.height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      if (!ball.isServing) {
+        for (let i = 0; i < ballTrail.length; i++) {
+          const point = ballTrail[i];
+          const ratio = i / ballTrail.length;
+          ctx.fillStyle = COLOR_BALL;
+          ctx.globalAlpha = ratio * 0.65;
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, ball.radius * ratio, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.globalAlpha = 1.0;
+      }
+
+      const paddleGlow = Math.sin(pulseTime) * 8 + 16;
+
+      ctx.fillStyle = COLOR_PLAYER;
+      ctx.shadowColor = COLOR_PLAYER;
+      ctx.shadowBlur = paddleGlow;
+      ctx.fillRect(player.x, player.y, paddleWidth, paddleHeight);
+
+      ctx.fillStyle = COLOR_AI;
+      ctx.shadowColor = COLOR_AI;
+      ctx.shadowBlur = paddleGlow;
+      ctx.fillRect(ai.x, ai.y, paddleWidth, paddleHeight);
+
+      ctx.fillStyle = ball.color;
+      ctx.shadowColor = ball.color;
+      ctx.shadowBlur = 18;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      for (let p of particles) {
+        p.phase += p.shimmerSpeed * 1.8;
+        const shimmerVal = (Math.sin(p.phase) + 1) / 2;
+
+        const shimmerAlpha = p.alpha * (0.6 + shimmerVal * 0.4);
+        const renderRadius = p.radius * (0.85 + shimmerVal * 0.3);
+
+        ctx.fillStyle = (shimmerVal > 0.9) ? "#e6ffff" : p.color;
+        ctx.globalAlpha = shimmerAlpha;
+        
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, renderRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1.0;
+
+      ctx.font = "bold 38px monospace";
+      ctx.textAlign = "center";
+
+      ctx.fillStyle = COLOR_PLAYER;
+      ctx.shadowColor = COLOR_PLAYER;
+      ctx.shadowBlur = 12;
+      ctx.fillText(player.score, canvas.width / 4, 55);
+
+      ctx.fillStyle = COLOR_AI;
+      ctx.shadowColor = COLOR_AI;
+      ctx.shadowBlur = 12;
+      ctx.fillText(ai.score, (canvas.width / 4) * 3, 55);
+
+      ctx.shadowBlur = 0;
+
+      if (gameState === "START") {
+        ctx.fillStyle = "#ffffff";
+        ctx.shadowColor = "#ffffff";
+        ctx.shadowBlur = 14;
+        ctx.font = "bold 26px monospace";
+        ctx.fillText("PRESS SPACE TO PLAY", canvas.width / 2, canvas.height / 2);
+      } else if (gameState === "SET_START") {
+        ctx.fillStyle = "#00f3ff";
+        ctx.shadowColor = "#00f3ff";
+        ctx.shadowBlur = 18;
+        ctx.font = "bold 32px monospace";
+        const currentSetNum = playerSets + aiSets + 1;
+        ctx.fillText(`SET ${currentSetNum}`, canvas.width / 2, canvas.height / 2 - 20);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.shadowBlur = 8;
+        ctx.font = "16px monospace";
+        ctx.fillText("PRESS SPACE TO BEGIN", canvas.width / 2, canvas.height / 2 + 25);
+      } else if (gameState === "GAME_OVER") {
+        if (playerSets >= SETS_TO_WIN) {
+          ctx.fillStyle = COLOR_PLAYER;
+          ctx.shadowColor = COLOR_PLAYER;
+          ctx.shadowBlur = 18;
+          ctx.font = "bold 32px monospace";
+          ctx.fillText("VICTORY!", canvas.width / 2, canvas.height / 2 - 20);
+        } else {
+          ctx.fillStyle = COLOR_AI;
+          ctx.shadowColor = COLOR_AI;
+          ctx.shadowBlur = 18;
+          ctx.font = "bold 32px monospace";
+          ctx.fillText("AI WINS!", canvas.width / 2, canvas.height / 2 - 20);
+        }
+        ctx.fillStyle = "#ffffff";
+        ctx.shadowBlur = 8;
+        ctx.font = "16px monospace";
+        ctx.fillText("PRESS SPACE TO RESTART", canvas.width / 2, canvas.height / 2 + 25);
+      }
+
+      ctx.restore();
+    }
+
+   let lastTime = 0;
+
+    function loop(timestamp) {
+      if (!lastTime) lastTime = timestamp;
+      let dt = (timestamp - lastTime) / 1000;
+      lastTime = timestamp;
+
+      // Cap dt so tab switches don't cause massive physics jumps
+      if (dt > 0.1) dt = 0.1;
+
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    updateWlTracker();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
